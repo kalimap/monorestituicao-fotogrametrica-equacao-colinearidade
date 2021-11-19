@@ -1,0 +1,253 @@
+clc
+clear
+pkg load symbolic
+
+%%COLINEARIDADE
+
+%Pontos de apoio primeiro e  depois os de check
+%C1:id do  ponto; C2-C3:fotocoord x e y; C4-C6:coord X, Y e Z no terreno
+pts=[57 129.006345 -316.526075 444.191 669.765 21.42
+84 2685.784982 -1901.74209 675.587 374.946 1.432
+108 1074.944783 -88.147495 554.357 662.66 12.16
+127 3055.124081 -503.404827 770.173 537.567 8.069
+133 1816.522793 -1434.12729 585.134 476.26 3.493
+136 278.024612 -1530.56471 395.148 530.693 6.973
+2 864.877781 -1047.17943 488.402 563.665 8.267
+94 1337.65961 -1476.69677 525.366 492.427 7.269
+123 2206.656506 -457.342054 669.969 577.359 9.741
+129 2372.706047 -1576.51785 648.682 432.527 2.117
+138 85.074456 -1110.94677 395.067 588.307 8.878
+145 1689.971259 -1198.14876 579.864 510.927 5.448];
+%N de pontos de apoio
+npa=6;
+
+%%Parametros de Orientacao Interior
+%poi=[c x0 y0 k1 k2 k3 p1 p2] em mm
+poi=[15.889;0.1746;-0.0947;-2.54848278*10^-4;1.48901365*10^-6;0;-8.92107195*10^-5;-8.00528299*10^-5];
+%Tamanho do pixel do sensor em mm
+pix=0.007;
+%Tamanbo da imagem em pixels (CxL)
+img=[3344,2224];
+
+%%Transformacao entre referenciais do sistema imagem
+%Transf de CxL para Fotogrametrico sem distorcao
+function[ftc_fsd]=cxl_to_fotog_s_dist(cxl,pix,img,poi,cod_sent)
+%Nas variaveis entrar com:
+%cxl: C1:id do ponto; C2-C3:matriz de fotocoordenadas no referencial CxL
+%pix: Tamanho do pixel do sensor em mm
+%img: Dimensoes da imagem em numero de pixels por coluna e linha
+%poi: POIs na ordem [dist focal(c), coordenadas do PP(x0 y0), coeficientes de dist radial(k1 k2 k3), coeficientes de dist descentrada(p1 p2)]
+%cod_sent, inserir o valor numerico:
+%    1 - Se o sentido postivo do ref CxL for para a esquerda e para baixo
+%    2 - Se o sentido positivo do ref CxL for para a esquerda e para cima
+
+%CxL para Digital em mm
+if (cod_sent==1||cod_sent==2);
+ftc_digmm(:,1)=cxl(:,1);
+
+  if cod_sent==2
+    cxl(:,3)=-cxl(:,3);
+  endif
+  
+  ftc_digmm(:,2)=pix*(cxl(:,2)-(img(1)-1)/2);
+  ftc_digmm(:,3)=-pix*(cxl(:,3)-(img(2)-1)/2);
+endif
+  
+%Digital em mm para Fotogrametrico com distorcao
+%Subtrair coordenadas do PP
+ftc_fcd(:,1)=ftc_digmm(:,1);
+ftc_fcd(:,2)=ftc_digmm(:,2)+poi(2);
+ftc_fcd(:,3)=ftc_digmm(:,3)+poi(3);
+
+%Fotogramétrico com distorcao para sem distorção
+%Raio dos pontos
+r=sqrt((ftc_fcd(:,2)).^2+(ftc_fcd(:,3)).^2);
+%Distorcao radial simetrica
+dx_r=(poi(4)*r.^2+poi(5)*r.^4+poi(6)*r.^6).*ftc_fcd(:,2);
+dy_r=(poi(4)*r.^2+poi(5)*r.^4+poi(6)*r.^6).*ftc_fcd(:,3);
+%Distorcao descentrada
+dx_d=poi(7)*(r.^2+2*ftc_fcd(:,2).^2)+2*poi(8)*ftc_fcd(:,2).*ftc_fcd(:,3);
+dy_d=2*poi(7)*ftc_fcd(:,2).*ftc_fcd(:,3)+poi(8)*(r.^2+2*ftc_fcd(:,3).^2);
+%Fotocoordenadas no ref Fotogrametrico Sem Distorcao
+ftc_fsd(:,1)=ftc_fcd(:,1);
+ftc_fsd(:,2)=ftc_fcd(:,2)-dx_r-dx_d;
+ftc_fsd(:,3)=ftc_fcd(:,3)-dy_r-dy_d;
+endfunction
+
+[ftc]=cxl_to_fotog_s_dist(pts(:,1:3),pix,img,poi,2);
+
+%%Ajustamento para Recessao Espacial
+%Matriz  Lb: Observacoes no espaco imagem
+function[Lb]=Matriz_Lb(ftc)
+%Inserir fotocoordenadas pts de apoio em matriz formato nx3, onde: C1-id do ponto, C2-ftc x, C3-ftc y
+
+Lb=zeros(2*size(ftc,1),1);
+
+  for i=1:size(ftc,1)
+    Lb((i*2)-1,1)=ftc(i,2);
+    Lb((i*2),1)=ftc(i,3);  
+  endfor
+endfunction
+
+[Lb]=Matriz_Lb(ftc(1:npa,:));
+
+%%Matriz Xap: Parametros aproximados inicialmente
+%Xap:[om phi kappa X0 Y0 Z0]
+%omega e phi aprox. 0
+%X0 e Y0 como X e Y do P145 próx ao centro
+%Z0 como a altura de voo aprox. 300m
+%Kappa aproximado: Az Fotogrametrico - Az Gedesico
+function[az]=azimute_por_coord(Xi,Yi,Xf,Yf)
+%Pontos mais extremos escolhidos (P57 - P84)
+
+%Azimute
+if ((Xf-Xi)>=0)&((Yf-Yi)>=0)
+    az=atand((Xf-Xi)/(Yf-Yi));
+elseif (((Xf-Xi)>=0)&((Yf-Yi)<=0))||(((Xf-Xi)<=0)&((Yf-Yi)<=0))
+    az=atand((Xf-Xi)/(Yf-Yi))+180;
+else ((Xf-Xi)<=0)&((Yf-Yi)>=0)
+    az=atand((Xf-Xi)/(Yf-Yi))+360;
+end
+endfunction
+[azg]=azimute_por_coord(pts(1,4),pts(1,5),pts(2,4),pts(2,5));
+[azf]=azimute_por_coord(ftc(1,2),ftc(1,3),ftc(2,2),ftc(2,3));
+kappa=deg2rad(azf-azg);
+Xap=[0.001 0.001 kappa pts(12,4) pts(12,5) 300]';
+
+%Matriz P: Pesos
+%Matriz Diagonal (sem levar em conta correlacoes entre as medidas) sendo o inverso da varianca das observacoes
+%Precisao das observacoes das fotocoord como sendo 1/2 pixel
+P=eye(size(Lb,1))*1/(pix^2);
+
+%Iteracoes
+fim=false;
+it=-1;
+while~fim %(Enquanto fim for falso)
+it=it+1
+
+%Matriz A: Derivada das observacoes em relacao aos parametros
+%Matriz L: Discrepancia entre observacoes e valores calculados com X0
+function [A,L]=Matriz_A_L(c,Xap,Lb,coord)
+  
+%c:Distancia focal
+%X0: Inserir vetor de parametros aproximados
+%Lb: Vetor de observacoes das fotocoordenadas
+%Coord: Inserir coordenadas dos pts de apoio em matriz formato nx4, onde: C1-id do ponto, C2-Coord X, C3-Coord Y, C4-Coord Z
+
+%Rotações em omega, phi e kapa
+syms om ph ka
+rom=[[1 0 0]; [0 cos(om) sin(om)]; [0 -sin(om) cos(om)]];
+rph=[[cos(ph) 0 -sin(ph)]; [0 1 0]; [sin(ph) 0 cos(ph)]];
+rka=[[cos(ka) sin(ka) 0]; [-sin(ka) cos(ka) 0]; [0 0 1]];
+%Matriz M de Rotação primária em om, secund em phi e terc em kapa
+m=rka*rph*rom;
+
+%Equações de colinearidade
+syms X0 Y0 Z0 X Y Z eqx eqy
+eqx=[-c*((m(1,1)*(X-X0)+m(1,2)*(Y-Y0)+m(1,3)*(Z-Z0))/(m(3,1)*(X-X0)+m(3,2)*(Y-Y0)+m(3,3)*(Z-Z0)))];
+eqy=[-c*((m(2,1)*(X-X0)+m(2,2)*(Y-Y0)+m(2,3)*(Z-Z0))/(m(3,1)*(X-X0)+m(3,2)*(Y-Y0)+m(3,3)*(Z-Z0)))];
+
+%Derivadas em relação aos parâmetros
+d_eqx=[diff(eqx,om) diff(eqx,ph) diff(eqx,ka) diff(eqx,X0) diff(eqx,Y0) diff(eqx,Z0)];
+d_eqy=[diff(eqy,om) diff(eqy,ph) diff(eqy,ka) diff(eqy,X0) diff(eqy,Y0) diff(eqy,Z0)];
+
+%Matriz A 12(obs)x6(param)
+syms A;
+A=subs(A,zeros(2*size(coord,1),size(d_eqx,2)));
+for i=1:size(coord,1)
+  A(i*2-1,:)=vpa(subs(d_eqx,[om ph ka X0 Y0 Z0 X Y Z],[Xap(1) Xap(2) Xap(3) Xap(4) Xap(5) Xap(6) coord(i,2) coord(i,3) coord(i,4)]));
+  A(i*2,:)=vpa(subs(d_eqy,[om ph ka X0 Y0 Z0 X Y Z],[Xap(1) Xap(2) Xap(3) Xap(4) Xap(5) Xap(6) coord(i,2) coord(i,3) coord(i,4)]));
+endfor
+
+%Matriz L0
+syms L0;
+L0=subs(L0,zeros(size(Lb,1),1));
+for i=1:size(coord,1)
+  L0(i*2-1,:)=vpa(subs(eqx,[om ph ka X0 Y0 Z0 X Y Z],[Xap(1) Xap(2) Xap(3) Xap(4) Xap(5) Xap(6) coord(i,2) coord(i,3) coord(i,4)]));
+  L0(i*2,:)=vpa(subs(eqy,[om ph ka X0 Y0 Z0 X Y Z],[Xap(1) Xap(2) Xap(3) Xap(4) Xap(5) Xap(6) coord(i,2) coord(i,3) coord(i,4)]));
+endfor
+
+%Matriz L: L0-Lb
+L=vpa(L0-Lb);
+endfunction
+
+[A,L]=Matriz_A_L(poi(1),Xap,Lb,[pts(1:npa,1) pts(1:npa,4:6)]);
+
+%Matriz Xa: Parametros ajustados
+function [Xa,X,N]=Matriz_Xa(A,P,L,Xap)
+%Inserir Matriz de derivadas (A), pesos (P),discrepancia das observacoes(L) e parametros aproximados(X0)
+
+%Equacoes Normais
+N=A'*P*A;
+U=A'*P*L;
+
+%Matriz X: Correcao dos Parametros
+X=-inv(N)*U;
+Xa=X+Xap;
+endfunction
+[Xa,X,N]=Matriz_Xa(A,P,L,Xap);
+
+%Atualizar Matriz Xap
+Xap=Xa;
+
+%Fim da iteracao
+fim=(max(abs(X))<10^-6) || (it>10);
+
+endwhile
+
+%Variancia a posteriori
+function [V,sig_pos,sig_Xa]=sigma_posterior(A,X,L,P,N)
+%Matriz V: Residuos das observacoes
+V=double(A*X+L);
+%Grau de liberdade: N de equacoes - N de parametros (n-u)
+gl=size(A,1)-size(A,2);
+%Variancia a posteriori  
+sig_pos=V'*P*V/gl;
+%Matriz Variancia-Covariancia dos Parametros
+MVC=sig_pos*inv(N);
+%Desvio Padrao dos Parametros
+sig_Xa=sqrt(diag(MVC));
+
+endfunction
+[V,sig_pos,sig_Xa]=sigma_posterior(A,X,L,P,N);
+
+%Equacao de Colinearidade Inversa
+function [XY]=Colinearidade_inversa(POE,Z,ftc,c)
+%POEs: Inserir matriz [omega phi kappa X0 Y0 Z0]
+%Coordenada Z dos  pontos no terreno
+%ftc: Fotocoordenadas dos pts de apoio em matriz formato nx3, onde: C1-id do ponto, C2-ftc x, C3-ftc y
+%c: Distância focal
+
+%Rotações em omega, phi e kapa
+syms om ph ka
+rom=[[1 0 0]; [0 cos(om) sin(om)]; [0 -sin(om) cos(om)]];
+rph=[[cos(ph) 0 -sin(ph)]; [0 1 0]; [sin(ph) 0 cos(ph)]];
+rka=[[cos(ka) sin(ka) 0]; [-sin(ka) cos(ka) 0]; [0 0 1]];
+%Matriz M de Rotação primária em om, secund em phi e terc em kapa
+m=rka*rph*rom;
+m=double(subs(m,[om ph ka],[POE(1) POE(2) POE(3)]));
+POE=double(POE);
+
+XY=zeros(size(ftc,1),3);
+XY(:,1)=ftc(:,1);
+
+for i=1:size(ftc,1)
+XY(i,2)=POE(4)+(Z(i)-POE(6))*((m(1,1)*ftc(i,2)+m(2,1)*ftc(i,3)+m(3,1)*(-c))/(m(1,3)*ftc(i,2)+m(2,3)*ftc(i,3)+m(3,3)*(-c)));
+XY(i,3)=POE(5)+(Z(i)-POE(6))*((m(1,2)*ftc(i,2)+m(2,2)*ftc(i,3)+m(3,2)*(-c))/(m(1,3)*ftc(i,2)+m(2,3)*ftc(i,3)+m(3,3)*(-c)));
+endfor
+
+
+endfunction
+[XY]=Colinearidade_inversa(Xa,pts(:,6),ftc,poi(1));
+
+%Precisao: Discrepancia nos Pontos de Apoio (Calculado-Observado)
+pr(:,1)=[pts(1:npa,1)];
+pr(:,2:3)=XY(1:npa,2:3)-pts(1:npa,4:5);
+%Acuracia: Discrepancia nos Pontos de Verificacao (Calculado-Observado)
+ac(:,1)=[pts((npa+1):size(pts,1),1)];
+ac(:,2:3)=XY((npa+1):size(pts,1),2:3)-pts((npa+1):size(pts,1),4:5);
+
+%Teste do qui-quadrado
+sig_pri=1;
+gl=size(A,1)-size(A,2);
+qui=(sig_pos/sig_pri)*gl;
